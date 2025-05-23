@@ -1,0 +1,98 @@
+# Build directories
+/build/
+/cmake-build-*/
+/out/
+/Debug/
+/Release/
+/x64/
+/bin/
+/lib/
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# IDE specific files
+## Visual Studio / Visual Studio Code
+.vs/
+.vscode/
+ipch/
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.db
+*.VC.VC.opendb
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## CLion
+.idea/
+*.iml
+*.iws
+.idea_modules/
+
+# Network capture files
+*.pcap
+*.pcapng
+*.cap
+*.etl
+*.pkt
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+*~
+
+# Other project specific files
+*.swp
+.project
+.cproject
+.settings/
+*.sublime-workspace
+*.code-workspace

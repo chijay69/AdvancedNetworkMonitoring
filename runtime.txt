@@ -1,0 +1,16 @@
+
+## Runtime Permissions
+- The application requires administrator privileges to:
+  - Access network interfaces in promiscuous mode
+  - Perform ARP scanning on the network
+  - Capture packets not destined for the host machine
+
+## Troubleshooting
+- If "Access Denied" errors occur, ensure the application is run as Administrator
+- If no interfaces are detected, verify Npcap/WinPcap installation
+- Windows Defender or other security software may block packet capture functions
+
+## Performance Considerations
+- Console output mode may slow down capture rate for high-traffic networks
+- ARP scanning on large networks may take several minutes to complete
+- File writing performance depends on disk I/O speed
