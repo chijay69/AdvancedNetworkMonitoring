@@ -16,32 +16,6 @@
 #include <netinet/in.h> // For INET6_ADDRSTRLEN
 #endif
 
-// Prefer constexpr over #define for type safety and scoping
-constexpr u_short ETHER_TYPE_IP_V4    = 0x0800;
-constexpr u_short ETHER_TYPE_ARP      = 0x0806;
-constexpr u_short ETHER_TYPE_IPV6     = 0x86DD;
-constexpr u_short ETHER_TYPE_VLAN     = 0x8100;
-constexpr u_short ETHER_TYPE_REVARP   = 0x8035; // Corrected RE_VARP definition
-
-constexpr u_char IP_PROTOCOL_TCP   = 0x06;
-constexpr u_char IP_PROTOCOL_UDP   = 0x11;
-constexpr u_char IP_PROTOCOL_ICMP  = 0x01;
-
-constexpr int ETHER_ADDR_LEN_C = 6;
-
-constexpr u_int IP_FLAG_RESERVED = 0x4;  // bit 2
-constexpr u_int IP_FLAG_DF       = 0x2;  // bit 1 (Don't Fragment)
-constexpr u_int IP_FLAG_MF       = 0x1;  // bit 0 (More Fragments)
-// Define TCP flags if not already defined
-constexpr u_char TH_FIN_C  = 0x01;
-constexpr u_char TH_SYN_C  = 0x02;
-constexpr u_char TH_RST_C  = 0x04;
-constexpr u_char TH_PSH_C  = 0x08;
-constexpr u_char TH_ACK_C  = 0x10;
-constexpr u_char TH_URG_C  = 0x20;
-constexpr u_char TH_ECE_C  = 0x40;
-constexpr u_char TH_CWR_C  = 0x80;
-
 PacketParser::PacketParser() = default;
 
 // Helper to get ICMP type name
@@ -395,10 +369,34 @@ void PacketParser::parseAndPrint(const pcap_pkthdr *pkthdr, const std::vector<u_
     // Determine what comes after Ethernet
     if (packet_len >= ETHER_HDR_LEN_C) {
         const auto eth_header = reinterpret_cast<const struct ether_header*>(packet);
-        const u_short eth_type = ntohs(eth_header->ether_type);
+        u_short eth_type = ntohs(eth_header->ether_type);
 
         const u_char* next_protocol_ptr = packet + ETHER_HDR_LEN_C;
         u_int remaining_len = packet_len - ETHER_HDR_LEN_C;
+
+        //Handle VLAN tagged frames
+        if (eth_type == ETHER_TYPE_VLAN) {
+
+            if (remaining_len < 4) {
+                os << "  VLAN Tagged Frame too short for VLAN header." << std::endl;
+                return;
+            }
+
+            eth_type = ntohs(*reinterpret_cast<const u_short*>(next_protocol_ptr + 2));
+            next_protocol_ptr += 4;
+            remaining_len -= 4;
+            os << "  VLAN Tagged Frame" << std::endl;
+            os << "    Encapsulated EtherType: 0x" << std::hex << eth_type << std::dec;
+
+            switch (eth_type) {
+                case ETHER_TYPE_IP_V4:    os << " (IPv4)"; break;
+                case ETHER_TYPE_IPV6:     os << " (IPv6)"; break;
+                case ETHER_TYPE_ARP:      os << " (ARP)";  break;
+                case ETHER_TYPE_REVARP:   os << " (Reverse ARP)"; break;
+                default:                  os << " (Unknown)"; break;
+            }
+            os << std::endl; // End the line here
+        }
 
         switch (eth_type) {
             case ETHER_TYPE_IP_V4:
@@ -413,8 +411,6 @@ void PacketParser::parseAndPrint(const pcap_pkthdr *pkthdr, const std::vector<u_
             // Add other EtherTypes as needed (e.g., ETHER_TYPE_VLAN for VLAN-tagged frames)
             default:
                 os << "  (Payload starts after Ethernet header, unknown EtherType)" << std::endl;
-                // Optionally print hex dump of remaining payload
-                // printHex(next_protocol_ptr, remaining_len, os);
                 break;
         }
     } else {

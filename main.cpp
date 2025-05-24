@@ -10,6 +10,9 @@
 #include "PcapFileReader.h"
 #include "NetworkScanner.h" // New
 #include "InputClass.h"     // Assuming you still want to demonstrate InputClass
+#include "NetworkMonitor.h"
+#include "MonitorWriter.h"
+
 
 int main() {
     std::cout << "--- Advanced Network Analyzer ---" << std::endl;
@@ -39,21 +42,32 @@ int main() {
     std::cin >> capture_output_choice;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
-    std::unique_ptr<PacketWriter> capture_writer;
+    // --- Initialize Network monitoring ---
+    NetworkMonitor monitor(60);
+
+    // set monitoring threshold
+    monitor.setBandwidthThresholdMbps(100);
+    monitor.setPacketRateThreshold(1000);
+
+    // setup PacketWriter
+    std::unique_ptr<PacketWriter> base_writer;
     std::string actual_capture_destination;
 
     if (capture_output_choice == 1) {
-        capture_writer = std::make_unique<PcapFileWriter>();
+        base_writer = std::make_unique<PcapFileWriter>();
         actual_capture_destination = capture_filename;
         std::cout << "Capturing to file: " << actual_capture_destination << std::endl;
     } else {
-        capture_writer = std::make_unique<ConsoleWriter>(); // ConsoleWriter now uses PacketParser
+        base_writer = std::make_unique<ConsoleWriter>(); // ConsoleWriter now uses PacketParser
         actual_capture_destination = "";
         std::cout << "Capturing to console with detailed parsing." << std::endl;
     }
 
+    // wrap base_writer with a monitoring writer
+    auto monitoring_writer = std::make_unique<MonitorWriter>(std::move(base_writer), monitor);
+
     // --- Initialize Network Capture ---
-    NetworkCapture capturer(std::move(capture_writer));
+    NetworkCapture capturer(std::move(monitoring_writer));
 
     if (!capturer.listDevices()) {
         std::cerr << "Failed to list devices. Exiting." << std::endl;
@@ -84,14 +98,37 @@ int main() {
         scanner.printDiscoveredHosts();
     }
 
+    // start Network monitoring
+    std::cout << "\nStarting Network monitoring..." << std::endl;
+    monitor.startMonitoring();
+
+    // create a thread to print periodically
+    std::atomic<bool> stop_stats_thread = false;
+    std::thread stats_thread([&monitor, &stop_stats_thread, capture_duration]() {
+        for (int i = 0; i < capture_duration && !stop_stats_thread; i++) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (i % 5 == 0) { // Print stats every 5 seconds
+                monitor.printCurrentStats();
+            }
+        }
+    });
+
     // --- Start Live Packet Capture ---
     std::cout << "\n--- Live Packet Capture ---" << std::endl;
-    // Note: The ARP filter from the scan is removed by pcap_setfilter(handle, NULL) in NetworkScanner,
-    // so general capture will resume.
+
     if (!capturer.startCapture(capture_duration, actual_capture_destination)) {
         std::cerr << "Failed to start live capture. Exiting." << std::endl;
-        return 1;
-    }
+        stop_stats_thread = true;
+        if (stats_thread.joinable()) stats_thread.join();
+        return 1;    }
+
+    // Wait for stats thread to finish
+    stop_stats_thread = true;
+    if (stats_thread.joinable()) stats_thread.join();
+
+    // Stop monitoring
+    monitor.stopMonitoring();
+
 
     // --- Read Captured Output (if written to file) ---
     if (capture_output_choice == 1) { // Only read if it was written to a file
@@ -103,36 +140,35 @@ int main() {
         std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
         std::unique_ptr<PacketWriter> read_writer;
-        // std::string actual_read_destination; // This line is now removed
 
         if (read_output_choice == 1) {
             read_writer = std::make_unique<ConsoleWriter>();
-            // actual_read_destination = ""; // This line is now removed
-            // The ConsoleWriter doesn't need a filename for its open() method, it just prints.
             std::cout << "Reading from '" << capture_filename << "' and printing to console with detailed parsing." << std::endl;
         } else {
             std::string new_output_filename;
             std::cout << "Enter a new filename to re-dump captured packets (e.g., redump.pcap): ";
             std::getline(std::cin, new_output_filename);
             read_writer = std::make_unique<PcapFileWriter>();
-            // actual_read_destination = new_output_filename; // This line is now removed
-            // The PcapFileWriter's open() method takes the filename directly.
             read_writer->open(new_output_filename, nullptr); // Open the PcapFileWriter for writing
             std::cout << "Reading from '" << capture_filename << "' and re-dumping to: " << new_output_filename << std::endl;
         }
 
         PcapFileReader file_reader;
         if (!read_writer) {
-    std::cerr << "No PacketWriter available." << std::endl;
-    return 1;
-}
-if (!file_reader.readFromFile(capture_filename, *read_writer)) {
-    std::cerr << "Failed to read packets from file." << std::endl;
-    return 1;
-}
+            std::cerr << "No PacketWriter available." << std::endl;
+            return 1;
+        }
+        if (!file_reader.readFromFile(capture_filename, *read_writer)) {
+            std::cerr << "Failed to read packets from file." << std::endl;
+            return 1;
+        }
     } else {
         std::cout << "\nSkipping file read as capture was sent to console (live parsing)." << std::endl;
     }
+
+    // Final network statistics summary
+    std::cout << "\n--- Final Network Statistics Summary ---" << std::endl;
+    monitor.printCurrentStats();
 
     std::cout << "\nApplication finished gracefully." << std::endl;
     return 0;

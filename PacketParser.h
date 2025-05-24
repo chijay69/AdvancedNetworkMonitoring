@@ -7,10 +7,37 @@
 
 #include "PacketStructs.h"
 #include <iostream>
-#include <string>
 #include <vector>
 #include <iomanip>
 #include <pcap/pcap.h>
+
+
+// Prefer constexpr over #define for type safety and scoping
+constexpr u_short ETHER_TYPE_IP_V4    = 0x0800;
+constexpr u_short ETHER_TYPE_ARP      = 0x0806;
+constexpr u_short ETHER_TYPE_IPV6     = 0x86DD;
+constexpr u_short ETHER_TYPE_VLAN     = 0x8100;
+constexpr u_short ETHER_TYPE_REVARP   = 0x8035; // Corrected RE_VARP definition
+
+constexpr u_char IP_PROTOCOL_TCP   = 0x06;
+constexpr u_char IP_PROTOCOL_UDP   = 0x11;
+constexpr u_char IP_PROTOCOL_ICMP  = 0x01;
+
+constexpr int ETHER_ADDR_LEN_C = 6;
+
+constexpr u_int IP_FLAG_RESERVED = 0x4;  // bit 2
+constexpr u_int IP_FLAG_DF       = 0x2;  // bit 1 (Don't Fragment)
+constexpr u_int IP_FLAG_MF       = 0x1;  // bit 0 (More Fragments)
+// Define TCP flags if not already defined
+constexpr u_char TH_FIN_C  = 0x01;
+constexpr u_char TH_SYN_C  = 0x02;
+constexpr u_char TH_RST_C  = 0x04;
+constexpr u_char TH_PSH_C  = 0x08;
+constexpr u_char TH_ACK_C  = 0x10;
+constexpr u_char TH_URG_C  = 0x20;
+constexpr u_char TH_ECE_C  = 0x40;
+constexpr u_char TH_CWR_C  = 0x80;
+
 
 class PacketParser {
     public:

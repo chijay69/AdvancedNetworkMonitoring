@@ -26,7 +26,11 @@ add_executable(cppTutorial main.cpp
         PacketParser.h
         packetParser.cpp
         NetworkScanner.h
-        NetworkScanner.cpp) # Defines the executable target named 'cppTutorial'
+        NetworkScanner.cpp
+        NetworkMonitor.h
+        NetworkMonitor.cpp
+        MonitorWriter.h
+        MonitorWriter.cpp) # Defines the executable target named 'cppTutorial'
 
 
 # Add Npcap include directory
