@@ -2,23 +2,28 @@
 // Created by HomePC on 5/22/2025.
 // Packetparser.cpp
 //
-#include "PacketParser.h"
+#include "PacketParser.h" // <--- MUST BE THE FIRST INCLUDE FOR ITS OWN DEFINITIONS
+#include "PacketStructs.h" // Assumed to define ether_header, ip_header, tcp_header, udp_header, icmp_header, ipv6_header, arp_header
 #include <sstream>
 #include <iomanip>
-#include <vector> // Required for std::vector<u_char>
+#include <vector>    // Required for std::vector<u_char>
+#include <algorithm> // For std::transform if needed
+#include <cstdint>   // REQUIRED: For uint32_t
+#include <pcap/pcap.h> // REQUIRED: For pcap_pkthdr, u_char, u_int, u_short (if not already pulled by PacketParser.h and PacketStructs.h)
 
 // Include the necessary headers for network functions and types
 #ifdef _WIN32
 #include <winsock2.h> // For u_char, u_short, u_int, in_addr (Windows)
-#include <ws2tcpip.h> // For inet_ntop
+#include <ws2tcpip.h> // For inet_ntop, INET6_ADDRSTRLEN
 #else
 #include <arpa/inet.h>  // For ntohs, ntohl, inet_ntop etc.
 #include <netinet/in.h> // For INET6_ADDRSTRLEN
 #endif
 
-PacketParser::PacketParser() = default;
+// Constructor for PacketParser
+PacketParser::PacketParser() = default; // Corrected: This is the definition, not just a declaration
 
-// Helper to get ICMP type name
+// Helper to get ICMP type name based on type and code
 const char *PacketParser::getIcmpTypeName(u_char type, u_char code) {
     switch (type) {
         case 0: return "Echo Reply";
@@ -42,7 +47,9 @@ const char *PacketParser::getIcmpTypeName(u_char type, u_char code) {
 
 // Helper to get ARP opcode name
 const char *PacketParser::getArpOpcode(u_char opcode) {
-    switch (ntohs(opcode)) {
+    // The opcode passed to this function is already expected to be in host byte order
+    // and correctly cast to u_char from the original u_short.
+    switch (opcode) {
         case 1: return "Request";
         case 2: return "Reply";
         case 3: return "Request Reverse"; // RARP Request
@@ -51,7 +58,22 @@ const char *PacketParser::getArpOpcode(u_char opcode) {
     }
 }
 
+// Helper to get IP protocol name
+const char* PacketParser::getIpProtocolName(u_char p) {
+    switch (p) {
+        case IP_PROTOCOL_TCP:  return "TCP";
+        case IP_PROTOCOL_UDP:  return "UDP";
+        case IP_PROTOCOL_ICMP: return "ICMP";
+        default:              return "Unknown";
+    }
+}
 
+// Helper to get ICMP type (without code) - currently unused, but declared in header
+const char *PacketParser::getIcmpType(u_char type) {
+    return getIcmpTypeName(type, 0); // Delegate to the more specific function
+}
+
+// Helper to print MAC address in colon-separated hex format
 void PacketParser::printMacAddress(const u_char *mac, std::ostream &os) {
     os << std::hex << std::setfill('0');
     for (int i = 0; i < ETHER_ADDR_LEN_C; ++i) { // Use constexpr length
@@ -60,34 +82,42 @@ void PacketParser::printMacAddress(const u_char *mac, std::ostream &os) {
             os << ":";
         }
     }
-    os << std::dec << std::setfill(' ');
+    os << std::dec << std::setfill(' '); // Reset stream formatting
 }
 
+// Helper to print IPv4 address in dot-separated decimal format
 void PacketParser::printIpAddress(const u_char *ip, std::ostream &os) {
     os << static_cast<int>(ip[0]) << "." << static_cast<int>(ip[1]) << "." << static_cast<int>(ip[2]) << "." << static_cast<int>(ip[3]);
 }
 
+// Helper to print raw data in hex format
 void PacketParser::printHex(const u_char *data, int len, std::ostream &os) {
     os << std::hex << std::setfill('0');
     for (int i = 0; i < len; ++i) {
         os << std::setw(2) << static_cast<int>(data[i]);
     }
-    os << std::dec << std::setfill(' ');
+    os << std::dec << std::setfill(' '); // Reset stream formatting
 }
 
-void PacketParser::parseEthernet(const u_char *packet, const u_int packet_len, std::ostream &os) {
-    if (packet_len < ETHER_HDR_LEN_C) { // Use constexpr
+// Parses the Ethernet header and determines the next protocol, handling VLAN tags
+// Returns the resolved EtherType and the offset to the next protocol
+void PacketParser::parseEthernet(const u_char *packet, u_int packet_len, std::ostream &os,
+                                 u_short &out_eth_type, u_int &out_next_protocol_offset) {
+    out_eth_type = 0; // Initialize output parameters
+    out_next_protocol_offset = 0;
+
+    if (packet_len < ETHER_HDR_LEN_C) {
         os << "  Packet too short for Ethernet header." << std::endl;
         return;
     }
 
     const auto eth_header = reinterpret_cast<const struct ether_header*>(packet);
 
-    // Lambda for formatting MAC - good!
+    // Lambda for formatting MAC address
     auto formatMAC = [](const u_char *mac) {
         std::ostringstream ss;
         ss << std::hex << std::setfill('0');
-        for (int i = 0; i < ETHER_ADDR_LEN_C; ++i) { // Use constexpr length
+        for (int i = 0; i < ETHER_ADDR_LEN_C; ++i) {
             if (i > 0) ss << ":";
             ss << std::setw(2) << static_cast<int>(mac[i]);
         }
@@ -98,38 +128,65 @@ void PacketParser::parseEthernet(const u_char *packet, const u_int packet_len, s
     os << "  Destination MAC: " << formatMAC(eth_header->ether_dhost) << std::endl;
     os << "  Source MAC:      " << formatMAC(eth_header->ether_shost) << std::endl;
 
-    const u_short eth_type = ntohs(eth_header->ether_type);
-    os << "  EtherType:       0x" << std::hex << eth_type << std::dec;
+    u_short current_eth_type = ntohs(eth_header->ether_type);
+    out_next_protocol_offset = ETHER_HDR_LEN_C; // Default offset after standard Ethernet header
 
-    switch (eth_type) {
-        case ETHER_TYPE_IP_V4:    os << " (IPv4)"; break;
-        case ETHER_TYPE_IPV6:     os << " (IPv6)"; break;
-        case ETHER_TYPE_ARP:      os << " (ARP)";  break;
-        case ETHER_TYPE_REVARP:   os << " (Reverse ARP)"; break; // Use corrected name
-        case ETHER_TYPE_VLAN:     os << " (VLAN-tagged)"; break;
-        default:                  os << " (Unknown)"; break;
+    // Check for 802.1Q VLAN Tag (EtherType 0x8100)
+    if (current_eth_type == ETHER_TYPE_VLAN) {
+        os << "  EtherType:       0x" << std::hex << current_eth_type << std::dec << " (VLAN-tagged)" << std::endl;
+
+        // Check if there's enough space for the VLAN tag (4 bytes)
+        if (packet_len < ETHER_HDR_LEN_C + 4) {
+            os << "  VLAN Tagged Frame too short for VLAN header." << std::endl;
+            return; // Cannot parse further
+        }
+
+        // The true EtherType is after the VLAN tag (2 bytes of TCI + 2 bytes for true EtherType)
+        const u_short* vlan_eth_type_ptr = reinterpret_cast<const u_short*>(packet + ETHER_HDR_LEN_C + 2);
+        out_eth_type = ntohs(*vlan_eth_type_ptr); // This is the actual EtherType of the encapsulated payload
+        out_next_protocol_offset += 4; // Advance offset by 4 bytes for VLAN tag
+
+        os << "  VLAN Encapsulation: " << std::endl;
+        // Optionally, parse and print VLAN Tag Control Information (TCI)
+        // const u_short tci = ntohs(*reinterpret_cast<const u_short*>(packet + ETHER_HDR_LEN_C));
+        // os << "    TCI: 0x" << std::hex << tci << std::dec << std::endl;
+        // os << "    Priority: " << ((tci >> 13) & 0x7) << std::endl;
+        // os << "    CFI: " << ((tci >> 12) & 0x1) << std::endl;
+        // os << "    VLAN ID: " << (tci & 0xFFF) << std::endl;
+
+        os << "    Encapsulated EtherType: 0x" << std::hex << out_eth_type << std::dec;
+        switch (out_eth_type) {
+            case ETHER_TYPE_IP_V4:    os << " (IPv4)"; break;
+            case ETHER_TYPE_IPV6:     os << " (IPv6)"; break;
+            case ETHER_TYPE_ARP:      os << " (ARP)";  break;
+            case ETHER_TYPE_REVARP:   os << " (Reverse ARP)"; break;
+            default:                  os << " (Unknown)"; break;
+        }
+        os << std::endl;
+
+    } else {
+        // No VLAN tag, the current_eth_type is the actual EtherType
+        out_eth_type = current_eth_type;
+        os << "  EtherType:       0x" << std::hex << out_eth_type << std::dec;
+        switch (out_eth_type) {
+            case ETHER_TYPE_IP_V4:    os << " (IPv4)"; break;
+            case ETHER_TYPE_IPV6:     os << " (IPv6)"; break; // Corrected typo here (EHER -> ETHER)
+            case ETHER_TYPE_ARP:      os << " (ARP)";  break;
+            case ETHER_TYPE_REVARP:   os << " (Reverse ARP)"; break;
+            default:                  os << " (Unknown)"; break;
+        }
+        os << std::endl;
     }
-    os << std::endl;
 }
 
-
-const char* protocolName(u_char p) {
-    switch (p) {
-        case IP_PROTOCOL_TCP:  return "TCP";
-        case IP_PROTOCOL_UDP:  return "UDP";
-        case IP_PROTOCOL_ICMP: return "ICMP";
-        default:              return "Unknown";
-    }
-}
-
-
+// Parses an IPv4 header and delegates to the next protocol parser
 void PacketParser::parseIPv4(const u_char *packet, u_int packet_len, std::ostream &os) {
-    if (packet_len < ETHER_HDR_LEN_C + sizeof(struct ip_header)) {
-        os << "Packet too short to be an IPv4 packet" << std::endl;
+    if (packet_len < sizeof(struct ip_header)) {
+        os << "Packet too short to be an IPv4 packet (min header size)." << std::endl;
         return;
     }
 
-    const auto ip_h = reinterpret_cast<const struct ip_header *>(packet + ETHER_HDR_LEN_C);
+    const auto ip_h = reinterpret_cast<const struct ip_header *>(packet);
 
     // Extract IP version and header length
     const u_int version = ip_h->ip_vhl >> 4;
@@ -141,7 +198,7 @@ void PacketParser::parseIPv4(const u_char *packet, u_int packet_len, std::ostrea
         return;
     }
 
-    if (packet_len < ETHER_HDR_LEN_C + ip_header_len) {
+    if (packet_len < ip_header_len) { // Check against remaining packet length
         os << "Packet too short for full IPv4 header based on length field." << std::endl;
         return;
     }
@@ -163,7 +220,7 @@ void PacketParser::parseIPv4(const u_char *packet, u_int packet_len, std::ostrea
     const u_int frag_offset = ntohs(ip_h->ip_off) & 0x1FFF;
     os << "  Fragment Offset: " << frag_offset << std::endl;
     os << "  TTL:             " << static_cast<int>(ip_h->ip_ttl) << std::endl;
-    os << "  Protocol:        " << static_cast<int>(ip_h->ip_p) << " (" << protocolName(ip_h->ip_p) << ")" << std::endl;
+    os << "  Protocol:        " << static_cast<int>(ip_h->ip_p) << " (" << getIpProtocolName(ip_h->ip_p) << ")" << std::endl;
     os << "  Header checksum: 0x" << std::hex << ntohs(ip_h->ip_sum) << std::dec << std::endl;
     os << "  Source address:  ";
     printIpAddress(ip_h->ip_src, os);
@@ -172,9 +229,9 @@ void PacketParser::parseIPv4(const u_char *packet, u_int packet_len, std::ostrea
     printIpAddress(ip_h->ip_dst, os);
     os << std::endl;
 
-    // Delegate to appropriate protocol parser
-    const u_char* next_header_ptr = packet + ETHER_HDR_LEN_C + ip_header_len;
-    u_int remaining_packet_len = packet_len - (ETHER_HDR_LEN_C + ip_header_len);
+    // Delegate to appropriate protocol parser for the payload
+    const u_char* next_header_ptr = packet + ip_header_len;
+    u_int remaining_packet_len = packet_len - ip_header_len;
 
     switch (ip_h->ip_p) {
         case IP_PROTOCOL_TCP:
@@ -191,6 +248,8 @@ void PacketParser::parseIPv4(const u_char *packet, u_int packet_len, std::ostrea
             break;
     }
 }
+
+// Parses a TCP header
 void PacketParser::parseTCP(const u_char *packet, u_int packet_len, std::ostream &os) {
     if (packet_len < sizeof(struct tcp_header)) {
         os << "TCP packet too short for base TCP header." << std::endl;
@@ -198,7 +257,7 @@ void PacketParser::parseTCP(const u_char *packet, u_int packet_len, std::ostream
     }
     const tcp_header *tcp_h = reinterpret_cast<const tcp_header *>(packet);
 
-    // TCP header length is (th_offx2 >> 4) * 4
+    // TCP header length is (th_offx2 >> 4) * 4 (th_offx2 contains data offset in high 4 bits)
     const u_int tcp_header_len = (tcp_h->th_offx2 >> 4) * 4;
 
     if (packet_len < tcp_header_len) {
@@ -229,7 +288,7 @@ void PacketParser::parseTCP(const u_char *packet, u_int packet_len, std::ostream
     // You can parse TCP options here if tcp_header_len > sizeof(tcp_header)
 }
 
-
+// Parses a UDP header
 void PacketParser::parseUDP(const u_char *packet, u_int packet_len, std::ostream &os) {
     if (packet_len < sizeof(struct udp_header)) {
         os << "UDP packet too short for base UDP header." << std::endl;
@@ -243,6 +302,7 @@ void PacketParser::parseUDP(const u_char *packet, u_int packet_len, std::ostream
     os << "  Checksum:         0x" << std::hex << ntohs(udp_h->uh_sum) << std::dec << std::endl;
 }
 
+// Parses an ICMP header
 void PacketParser::parseICMP(const u_char *packet, u_int packet_len, std::ostream &os) {
     if (packet_len < sizeof(struct icmp_header)) {
         os << "ICMP packet too short for base ICMP header." << std::endl;
@@ -258,7 +318,8 @@ void PacketParser::parseICMP(const u_char *packet, u_int packet_len, std::ostrea
     switch (icmp_h->icmp_type) {
         case 0: // Echo Reply
         case 8: // Echo Request
-            if (packet_len >= sizeof(struct icmp_header)) { // Check if echo fields are accessible
+            // Ensure packet_len is sufficient for echo fields
+            if (packet_len >= sizeof(struct icmp_header)) {
                 os << "  ID:       " << ntohs(icmp_h->echo.icmp_id) << std::endl;
                 os << "  Sequence: " << ntohs(icmp_h->echo.icmp_seq) << std::endl;
             } else {
@@ -266,8 +327,7 @@ void PacketParser::parseICMP(const u_char *packet, u_int packet_len, std::ostrea
             }
             break;
         default:
-            // Assuming icmp_void is for other types, or might need more specific parsing
-            // Check packet_len for other union members too if used
+            // For other ICMP types, print the 32-bit union data if available
             if (packet_len >= sizeof(struct icmp_header)) {
                  os << "  Union Data: 0x" << std::hex << static_cast<u_long>(ntohl(icmp_h->icmp_void)) << std::dec << std::endl;
             } else {
@@ -277,6 +337,7 @@ void PacketParser::parseICMP(const u_char *packet, u_int packet_len, std::ostrea
     }
 }
 
+// Parses an IPv6 header
 void PacketParser::parseIPv6(const u_char *packet, u_int packet_len, std::ostream &os) {
     if (packet_len < sizeof(ipv6_header)) {
         os << "IPv6 packet too short for base IPv6 header." << std::endl;
@@ -298,28 +359,31 @@ void PacketParser::parseIPv6(const u_char *packet, u_int packet_len, std::ostrea
     os << "  Next header:     " << static_cast<int>(ip6_h->next_header) << std::endl;
     os << "  Hop limit:       " << static_cast<int>(ip6_h->hop_limit) << std::endl;
 
-    char src_str[INET6_ADDRSTRLEN];
-    char dst_str[INET6_ADDRSTRLEN];
-    // Ensure winsock2.h and ws2tcpip.h (Windows) or arpa/inet.h (Linux/macOS) are included
+    char src_str[INET6_ADDRSTRLEN]; // Buffer for source IPv6 address string
+    char dst_str[INET6_ADDRSTRLEN]; // Buffer for destination IPv6 address string
+
+    // Convert source IPv6 address from binary to string
     if (inet_ntop(AF_INET6, ip6_h->src, src_str, INET6_ADDRSTRLEN) == nullptr) {
         os << "  Source address:      (Error converting IPv6 address)" << std::endl;
     } else {
         os << "  Source address:      " << src_str << std::endl;
     }
 
+    // Convert destination IPv6 address from binary to string
     if (inet_ntop(AF_INET6, ip6_h->dst, dst_str, INET6_ADDRSTRLEN) == nullptr) {
         os << "  Destination address: (Error converting IPv6 address)" << std::endl;
     } else {
         os << "  Destination address: " << dst_str << std::endl;
     }
 
-    // You would typically parse the next header here
+    // You would typically parse the next header here based on ip6_h->next_header
     const u_char* next_header_ptr = packet + sizeof(ipv6_header);
     u_int remaining_packet_len = packet_len - sizeof(ipv6_header);
     // Add parsing for next_header, similar to IPv4 protocol parsing
+    // This would involve a switch statement based on ip6_h->next_header
 }
 
-
+// Parses an ARP header
 void PacketParser::parseARP(const u_char *packet, u_int packet_len, std::ostream &os) {
     if (packet_len < sizeof(struct arp_header)) {
         os << "ARP packet too short for base ARP header." << std::endl;
@@ -328,11 +392,11 @@ void PacketParser::parseARP(const u_char *packet, u_int packet_len, std::ostream
     const arp_header *arp_h = reinterpret_cast<const arp_header *>(packet);
 
     os << "ARP Header" << std::endl; // Consistent capitalization
-    os << "  Hardware type:           " << ntohs(arp_h->arp_hrd) << std::endl; // Network byte order
-    os << "  Protocol type:           0x" << std::hex << ntohs(arp_h->arp_pro) << std::dec << std::endl; // Network byte order
+    os << "  Hardware type:           " << ntohs(arp_h->arp_hrd) << std::endl; // Network byte order to host
+    os << "  Protocol type:           0x" << std::hex << ntohs(arp_h->arp_pro) << std::dec << std::endl; // Network byte order to host
     os << "  Hardware address length: " << static_cast<int>(arp_h->arp_hln) << std::endl;
     os << "  Protocol address length: " << static_cast<int>(arp_h->arp_pln) << std::endl;
-    os << "  Operation:               " << ntohs(arp_h->arp_op) << " (" << getArpOpcode(arp_h->arp_op) << ")" << std::endl; // Network byte order
+    os << "  Operation:               " << ntohs(arp_h->arp_op) << " (" << getArpOpcode(static_cast<u_char>(ntohs(arp_h->arp_op))) << ")" << std::endl; // Convert to host byte order and then to u_char for getArpOpcode
     os << "  Source hardware/MAC address:      ";
     printMacAddress(arp_h->arp_sha, os);
     os << std::endl;
@@ -345,10 +409,9 @@ void PacketParser::parseARP(const u_char *packet, u_int packet_len, std::ostream
     os << "  Destination protocol/IP address:  ";
     printIpAddress(arp_h->arp_tpa, os);
     os << std::endl;
-    // The last print of arp_spa was redundant and removed
 }
 
-// Main parsing function
+// Main parsing function: orchestrates parsing of different layers
 void PacketParser::parseAndPrint(const pcap_pkthdr *pkthdr, const std::vector<u_char> *packet_data_vec, std::ostream &os) {
     if (!pkthdr || !packet_data_vec || packet_data_vec->empty()) {
         os << "  Invalid packet data or header." << std::endl;
@@ -363,58 +426,38 @@ void PacketParser::parseAndPrint(const pcap_pkthdr *pkthdr, const std::vector<u_
     os << "  Captured Length: " << pkthdr->caplen << std::endl;
     os << "  Original Length: " << pkthdr->len << std::endl;
 
-    // Parse Ethernet header
-    parseEthernet(packet, packet_len, os);
+    u_short eth_type_resolved;      // To store the resolved EtherType after VLAN checks
+    u_int next_protocol_offset;     // To store the offset to the next protocol header
 
-    // Determine what comes after Ethernet
-    if (packet_len >= ETHER_HDR_LEN_C) {
-        const auto eth_header = reinterpret_cast<const struct ether_header*>(packet);
-        u_short eth_type = ntohs(eth_header->ether_type);
+    // Parse Ethernet header and get the resolved EtherType and offset
+    parseEthernet(packet, packet_len, os, eth_type_resolved, next_protocol_offset);
 
-        const u_char* next_protocol_ptr = packet + ETHER_HDR_LEN_C;
-        u_int remaining_len = packet_len - ETHER_HDR_LEN_C;
+    // Check if Ethernet parsing failed or packet too short for next layer
+    if (next_protocol_offset == 0 || packet_len < next_protocol_offset) {
+        os << "  (Cannot parse network layer: Ethernet parsing failed or packet too short)" << std::endl;
+        os << "--- Packet End ---\n" << std::endl;
+        return;
+    }
 
-        //Handle VLAN tagged frames
-        if (eth_type == ETHER_TYPE_VLAN) {
+    const u_char* next_protocol_ptr = packet + next_protocol_offset;
+    u_int remaining_len = packet_len - next_protocol_offset;
 
-            if (remaining_len < 4) {
-                os << "  VLAN Tagged Frame too short for VLAN header." << std::endl;
-                return;
-            }
-
-            eth_type = ntohs(*reinterpret_cast<const u_short*>(next_protocol_ptr + 2));
-            next_protocol_ptr += 4;
-            remaining_len -= 4;
-            os << "  VLAN Tagged Frame" << std::endl;
-            os << "    Encapsulated EtherType: 0x" << std::hex << eth_type << std::dec;
-
-            switch (eth_type) {
-                case ETHER_TYPE_IP_V4:    os << " (IPv4)"; break;
-                case ETHER_TYPE_IPV6:     os << " (IPv6)"; break;
-                case ETHER_TYPE_ARP:      os << " (ARP)";  break;
-                case ETHER_TYPE_REVARP:   os << " (Reverse ARP)"; break;
-                default:                  os << " (Unknown)"; break;
-            }
-            os << std::endl; // End the line here
-        }
-
-        switch (eth_type) {
-            case ETHER_TYPE_IP_V4:
-                parseIPv4(next_protocol_ptr, remaining_len, os);
-                break;
-            case ETHER_TYPE_IPV6:
-                parseIPv6(next_protocol_ptr, remaining_len, os);
-                break;
-            case ETHER_TYPE_ARP:
-                parseARP(next_protocol_ptr, remaining_len, os);
-                break;
-            // Add other EtherTypes as needed (e.g., ETHER_TYPE_VLAN for VLAN-tagged frames)
-            default:
-                os << "  (Payload starts after Ethernet header, unknown EtherType)" << std::endl;
-                break;
-        }
-    } else {
-        os << "  (Packet too short to contain network layer data after Ethernet header)" << std::endl;
+    // Now, use the resolved EtherType to parse the next layer
+    switch (eth_type_resolved) {
+        case ETHER_TYPE_IP_V4:
+            parseIPv4(next_protocol_ptr, remaining_len, os);
+            break;
+        case ETHER_TYPE_IPV6:
+            parseIPv6(next_protocol_ptr, remaining_len, os);
+            break;
+        case ETHER_TYPE_ARP:
+            parseARP(next_protocol_ptr, remaining_len, os);
+            break;
+        // Add other EtherTypes as needed
+        default:
+            os << "  (Payload starts after Ethernet/VLAN header, unknown EtherType: 0x"
+               << std::hex << eth_type_resolved << std::dec << ")" << std::endl;
+            break;
     }
     os << "--- Packet End ---\n" << std::endl;
 }
