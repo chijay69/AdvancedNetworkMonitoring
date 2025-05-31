@@ -19,6 +19,8 @@ public:
         const std::string network_prefix, int start_host_ip, int end_host_ip);
 
     void printDiscoveredHosts();
+
+    std::map<std::string, std::string> getDiscoveredHosts();
 private:
     std::map<std::string, std::string> discovered_hosts_; // Stores IP -> MAC mappings of discovered hosts
 

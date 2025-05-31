@@ -30,7 +30,15 @@ add_executable(cppTutorial main.cpp
         NetworkMonitor.h
         NetworkMonitor.cpp
         MonitorWriter.h
-        MonitorWriter.cpp) # Defines the executable target named 'cppTutorial'
+        MonitorWriter.cpp
+        PingScanner.cpp
+        PingScanner.h
+        PortScanner.cpp
+        PortScanner.h
+        DiscoveryManager.cpp
+        DiscoveryManager.h
+        SNMPClient.cpp
+        SNMPClient.h) # Defines the executable target named 'cppTutorial'
 
 
 # Add Npcap include directory

@@ -162,6 +162,14 @@ void NetworkScanner::printDiscoveredHosts() {
     std::cout << std::string(30, '-') << std::endl;
 }
 
+std::map<std::string, std::string> NetworkScanner::getDiscoveredHosts() {
+    if (discovered_hosts_.empty()) {
+        std::cout << "No hosts discovered during ARP scan." << std::endl;
+    }
+    return discovered_hosts_;
+}
+
+
 // Builds an ARP request packet
 bool NetworkScanner::buildArpRequestPacket(const std::vector<u_char> &source_mac, const std::string &source_ip_str,
                                            const std::string &target_ip_str, std::vector<u_char> &packet_buffer)
